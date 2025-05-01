@@ -10,6 +10,7 @@
 
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/clocks.h"
 #include "hardware/irq.h"
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/structs/hstx_ctrl.h"
@@ -19,13 +20,18 @@
 #include "pico/sem.h"
 #include "stdio.h"
 #include "pico/stdlib.h"
+#include "hardware/vreg.h"
 
-
-#include "mountains_640x480_rgb332.h"
+// Comment line below to display 640x240 RGB565
+// #define RBG332    // display 640x480 RGB332
+// ----------------------------------------------------------------------------
+#ifdef RBG332
 #include "mario_640x480_rgb332.h"
-#include "mario_640x480_rgb565.h"
-//#define framebuf mountains_640x480
 #define framebuf mario_640x480_rgb332
+#else
+#include "mario_640x240_rgb565.h"
+#define framebuf mario_640x240_rgb565
+#endif
 
 // ----------------------------------------------------------------------------
 // DVI constants
@@ -41,31 +47,29 @@
 #define SYNC_V1_H1 (TMDS_CTRL_11 | (TMDS_CTRL_00 << 10) | (TMDS_CTRL_00 << 20))
 
 #define MODE_H_SYNC_POLARITY 0
-#define MODE_H_FRONT_PORCH   16
-#define MODE_H_SYNC_WIDTH    96
-#define MODE_H_BACK_PORCH    48
+#define MODE_H_FRONT_PORCH 16
+#define MODE_H_SYNC_WIDTH 96
+#define MODE_H_BACK_PORCH 48
 #define MODE_H_ACTIVE_PIXELS 640
 
 #define MODE_V_SYNC_POLARITY 0
-#define MODE_V_FRONT_PORCH   10
-#define MODE_V_SYNC_WIDTH    2
-#define MODE_V_BACK_PORCH    33
-#define MODE_V_ACTIVE_LINES  480
+#define MODE_V_FRONT_PORCH 10
+#define MODE_V_SYNC_WIDTH 2
+#define MODE_V_BACK_PORCH 33
+#define MODE_V_ACTIVE_LINES 480
 
-#define MODE_H_TOTAL_PIXELS ( \
+#define MODE_H_TOTAL_PIXELS (                \
     MODE_H_FRONT_PORCH + MODE_H_SYNC_WIDTH + \
-    MODE_H_BACK_PORCH  + MODE_H_ACTIVE_PIXELS \
-)
-#define MODE_V_TOTAL_LINES  ( \
+    MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS)
+#define MODE_V_TOTAL_LINES (                 \
     MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + \
-    MODE_V_BACK_PORCH  + MODE_V_ACTIVE_LINES \
-)
+    MODE_V_BACK_PORCH + MODE_V_ACTIVE_LINES)
 
-#define HSTX_CMD_RAW         (0x0u << 12)
-#define HSTX_CMD_RAW_REPEAT  (0x1u << 12)
-#define HSTX_CMD_TMDS        (0x2u << 12)
+#define HSTX_CMD_RAW (0x0u << 12)
+#define HSTX_CMD_RAW_REPEAT (0x1u << 12)
+#define HSTX_CMD_TMDS (0x2u << 12)
 #define HSTX_CMD_TMDS_REPEAT (0x3u << 12)
-#define HSTX_CMD_NOP         (0xfu << 12)
+#define HSTX_CMD_NOP (0xfu << 12)
 
 // ----------------------------------------------------------------------------
 // HSTX command lists
@@ -80,8 +84,7 @@ static uint32_t vblank_line_vsync_off[] = {
     SYNC_V1_H0,
     HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
     SYNC_V1_H1,
-    HSTX_CMD_NOP
-};
+    HSTX_CMD_NOP};
 
 static uint32_t vblank_line_vsync_on[] = {
     HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
@@ -90,8 +93,7 @@ static uint32_t vblank_line_vsync_on[] = {
     SYNC_V0_H0,
     HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
     SYNC_V0_H1,
-    HSTX_CMD_NOP
-};
+    HSTX_CMD_NOP};
 
 static uint32_t vactive_line[] = {
     HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
@@ -102,8 +104,7 @@ static uint32_t vactive_line[] = {
     HSTX_CMD_NOP,
     HSTX_CMD_RAW_REPEAT | MODE_H_BACK_PORCH,
     SYNC_V1_H1,
-    HSTX_CMD_TMDS       | MODE_H_ACTIVE_PIXELS
-};
+    HSTX_CMD_TMDS | MODE_H_ACTIVE_PIXELS};
 
 // ----------------------------------------------------------------------------
 // DMA logic
@@ -123,7 +124,8 @@ static uint v_scanline = 2;
 // post the command list, and another to post the pixels.
 static bool vactive_cmdlist_posted = false;
 
-void __scratch_x("") dma_irq_handler() {
+void __scratch_x("") dma_irq_handler()
+{
     // dma_pong indicates the channel that just finished, which is the one
     // we're about to reload.
     uint ch_num = dma_pong ? DMACH_PONG : DMACH_PING;
@@ -131,69 +133,105 @@ void __scratch_x("") dma_irq_handler() {
     dma_hw->intr = 1u << ch_num;
     dma_pong = !dma_pong;
 
-    if (v_scanline >= MODE_V_FRONT_PORCH && v_scanline < (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH)) {
-       // printf("Vsync %d\n", v_scanline);
+    if (v_scanline >= MODE_V_FRONT_PORCH && v_scanline < (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH))
+    {
+        // printf("Vsync %d\n", v_scanline);
         ch->read_addr = (uintptr_t)vblank_line_vsync_on;
         ch->transfer_count = count_of(vblank_line_vsync_on);
-    } else if (v_scanline < MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH) {
-        //printf("Vsync %d\n", v_scanline);
+    }
+    else if (v_scanline < MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH)
+    {
+        // printf("Vsync %d\n", v_scanline);
         ch->read_addr = (uintptr_t)vblank_line_vsync_off;
         ch->transfer_count = count_of(vblank_line_vsync_off);
-    } else if (!vactive_cmdlist_posted) {
+    }
+    else if (!vactive_cmdlist_posted)
+    {
         ch->read_addr = (uintptr_t)vactive_line;
         ch->transfer_count = count_of(vactive_line);
         vactive_cmdlist_posted = true;
-    } else {
+    }
+    else
+    {
+#ifdef RBG332
         ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // // Duplicate the upper half of the image to the lower half
+        // if (v_scanline > 523 - 480 + 240)
+        // {
+        //     ch->read_addr = (uintptr_t)&framebuf[(v_scanline - 239 - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // }
+        // else
+        // {
+        //     ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // }
         ch->transfer_count = MODE_H_ACTIVE_PIXELS / sizeof(uint32_t);
+#else
+        // 640x480 RGB565 is too large to fit into memory. The include file is 640 x 240 pixels.
+        // The image is duplicated to the lower half of the screen. 
+        if (v_scanline > 523 - 480 + 240)
+        {
+            ch->read_addr = (uintptr_t)&framebuf[(v_scanline - 239 - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS * 2];
+        }
+        else
+        {
+            ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS * 2];
+        }
+        ch->transfer_count = MODE_H_ACTIVE_PIXELS * 2 / sizeof(uint32_t);
+#endif
+        
         vactive_cmdlist_posted = false;
-        //printf("Scanline %d\n", v_scanline);
+        // printf("Scanline %d\n", v_scanline);
     }
 
-    if (!vactive_cmdlist_posted) {
+    if (!vactive_cmdlist_posted)
+    {
+
         v_scanline = (v_scanline + 1) % MODE_V_TOTAL_LINES;
-       
     }
 }
 
 // ----------------------------------------------------------------------------
 // Main program
 
-static __force_inline uint16_t colour_rgb565(uint8_t r, uint8_t g, uint8_t b) {
-    //printf("RGB565: %02x %02x %02x\n", r, g, b);
+static __force_inline uint16_t colour_rgb565(uint8_t r, uint8_t g, uint8_t b)
+{
+    // printf("RGB565: %02x %02x %02x\n", r, g, b);
     return ((uint16_t)r & 0xf8) >> 3 | ((uint16_t)g & 0xfc) << 3 | ((uint16_t)b & 0xf8) << 8;
 }
 
-static __force_inline uint8_t colour_rgb332(uint8_t r, uint8_t g, uint8_t b) {
-    //printf("RGB332: %02x %02x %02x\n", r, g, b);
+static __force_inline uint8_t colour_rgb332(uint8_t r, uint8_t g, uint8_t b)
+{
+    // printf("RGB332: %02x %02x %02x\n", r, g, b);
     return (r & 0xc0) >> 6 | (g & 0xe0) >> 3 | (b & 0xe0) >> 0;
 }
 
 void scroll_framebuffer(void);
 
-
-void core1_main() {
+void core1_main()
+{
     printf("DVI output example\n");
+
+#ifdef RBG332
     printf("640x480 RGB332\n");
-    
     // Configure HSTX's TMDS encoder for RGB332
     hstx_ctrl_hw->expand_tmds =
-        2  << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB | 
-        0  << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB   |
-        2  << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
-        29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB   |
-        1  << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
+        2 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
+        0 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
+        2 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
+        29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
+        1 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
         26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
-
+#else
     // This should be RGB565
-    // hstx_ctrl_hw->expand_tmds =
-    // 5  << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |  // 5 bits for red
-    // 0  << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB   |  // No rotation for red
-    // 6  << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |  // 6 bits for green
-    // 29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB   |  // Rotation for green
-    // 5  << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |  // 5 bits for blue
-    // 26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;     // Rotation for blue
-
+    printf("640x240 RGB565\n");
+    hstx_ctrl_hw->expand_tmds =
+        5 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB | // 5 bits for red
+        0 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |   // No rotation for red
+        6 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB | // 6 bits for green
+        29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |  // Rotation for green
+        5 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB | // 5 bits for blue
+        26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;   // Rotation for blue
+#endif
     // Pixels (TMDS) come in 4 8-bit chunks. Control symbols (RAW) are an
     // entire 32-bit word.
     hstx_ctrl_hw->expand_shift =
@@ -228,22 +266,24 @@ void core1_main() {
     // Assign clock pair to two neighbouring pins:
     hstx_ctrl_hw->bit[2] = HSTX_CTRL_BIT0_CLK_BITS;
     hstx_ctrl_hw->bit[3] = HSTX_CTRL_BIT0_CLK_BITS | HSTX_CTRL_BIT0_INV_BITS;
-    for (uint lane = 0; lane < 3; ++lane) {
+    for (uint lane = 0; lane < 3; ++lane)
+    {
         // For each TMDS lane, assign it to the correct GPIO pair based on the
         // desired pinout:
-        static const int lane_to_output_bit[3] = { 6, 4, 0 } ; // {0, 6, 4};
+        static const int lane_to_output_bit[3] = {6, 4, 0}; // {0, 6, 4};
         int bit = lane_to_output_bit[lane];
         // Output even bits during first half of each HSTX cycle, and odd bits
         // during second half. The shifter advances by two bits each cycle.
         uint32_t lane_data_sel_bits =
-            (lane * 10    ) << HSTX_CTRL_BIT0_SEL_P_LSB |
+            (lane * 10) << HSTX_CTRL_BIT0_SEL_P_LSB |
             (lane * 10 + 1) << HSTX_CTRL_BIT0_SEL_N_LSB;
         // The two halves of each pair get identical data, but one pin is inverted.
-        hstx_ctrl_hw->bit[bit    ] = lane_data_sel_bits;
+        hstx_ctrl_hw->bit[bit] = lane_data_sel_bits;
         hstx_ctrl_hw->bit[bit + 1] = lane_data_sel_bits | HSTX_CTRL_BIT0_INV_BITS;
     }
 
-    for (int i = 12; i <= 19; ++i) {
+    for (int i = 12; i <= 19; ++i)
+    {
         gpio_set_function(i, 0); // HSTX
     }
 
@@ -261,8 +301,7 @@ void core1_main() {
         &hstx_fifo_hw->fifo,
         vblank_line_vsync_off,
         count_of(vblank_line_vsync_off),
-        false
-    );
+        false);
     c = dma_channel_get_default_config(DMACH_PONG);
     channel_config_set_chain_to(&c, DMACH_PING);
     channel_config_set_dreq(&c, DREQ_HSTX);
@@ -272,8 +311,7 @@ void core1_main() {
         &hstx_fifo_hw->fifo,
         vblank_line_vsync_off,
         count_of(vblank_line_vsync_off),
-        false
-    );
+        false);
 
     dma_hw->ints0 = (1u << DMACH_PING) | (1u << DMACH_PONG);
     dma_hw->inte0 = (1u << DMACH_PING) | (1u << DMACH_PONG);
@@ -288,15 +326,20 @@ void core1_main() {
         __wfi();
 }
 
-int main(void) {
-    sizeof(mountains_640x480);
+int main(void)
+{
+    // sizeof(mountains_640x480);
+    //  vreg_set_voltage(VREG_VOLTAGE_1_20);
+    //  sleep_ms(10);
+    //  set_sys_clock_khz(252000, true);
     stdio_init_all();
     sleep_ms(1000);
     printf("DVI output example on Core1\n");
     int teller = 0;
     multicore_launch_core1(core1_main);
-    while(1) {
+    while (1)
+    {
         sleep_ms(1000);
-        printf("Running random on core 0: %d\n", teller++ );
+        printf("Running random on core 0: %d\n", teller++);
     }
 }

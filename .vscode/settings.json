@@ -20,6 +20,7 @@
     "cortex-debug.objdumpPath": "/usr/bin/arm-none-eabi-objdump",
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "files.associations": {
-        "stdlib.h": "c"
+        "stdlib.h": "c",
+        "mario_640x480_rgb565.h": "c"
     }
 }
