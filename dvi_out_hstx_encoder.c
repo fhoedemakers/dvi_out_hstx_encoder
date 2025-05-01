@@ -22,7 +22,10 @@
 
 
 #include "mountains_640x480_rgb332.h"
-#define framebuf mountains_640x480
+#include "mario_640x480_rgb332.h"
+#include "mario_640x480_rgb565.h"
+//#define framebuf mountains_640x480
+#define framebuf mario_640x480_rgb332
 
 // ----------------------------------------------------------------------------
 // DVI constants
