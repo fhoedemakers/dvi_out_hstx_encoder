@@ -23,7 +23,7 @@
 #include "hardware/vreg.h"
 
 // Comment line below to display 640x240 RGB565
-#define RBG332    // display 640x480 RGB332
+// #define RBG332    // display 640x480 RGB332
 // ----------------------------------------------------------------------------
 #ifdef RBG332
 #include "mario_640x480_rgb332.h"
@@ -154,16 +154,16 @@ void __scratch_x("") dma_irq_handler()
     else
     {
 #ifdef RBG332
-        //ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
-        // Duplicate the upper half of the image to the lower half
-        if (v_scanline > 523 - 480 + 240)
-        {
-            ch->read_addr = (uintptr_t)&framebuf[(v_scanline - 239 - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
-        }
-        else
-        {
-            ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
-        }
+        ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // // Duplicate the upper half of the image to the lower half
+        // if (v_scanline > 523 - 480 + 240)
+        // {
+        //     ch->read_addr = (uintptr_t)&framebuf[(v_scanline - 239 - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // }
+        // else
+        // {
+        //     ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        // }
         ch->transfer_count = MODE_H_ACTIVE_PIXELS / sizeof(uint32_t);
 #else
         // 640x480 RGB565 is too large to fit into memory. The include file is 640 x 240 pixels.
@@ -176,8 +176,9 @@ void __scratch_x("") dma_irq_handler()
         {
             ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS * 2];
         }
-        ch->transfer_count = MODE_H_ACTIVE_PIXELS * 2  / sizeof(uint32_t);
+        ch->transfer_count = MODE_H_ACTIVE_PIXELS * 2 / sizeof(uint32_t);
 #endif
+        
         vactive_cmdlist_posted = false;
         // printf("Scanline %d\n", v_scanline);
     }
