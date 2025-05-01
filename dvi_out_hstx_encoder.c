@@ -328,10 +328,6 @@ void core1_main()
 
 int main(void)
 {
-    // sizeof(mountains_640x480);
-    //  vreg_set_voltage(VREG_VOLTAGE_1_20);
-    //  sleep_ms(10);
-    //  set_sys_clock_khz(252000, true);
     stdio_init_all();
     sleep_ms(1000);
     printf("DVI output example on Core1\n");
