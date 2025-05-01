@@ -166,3 +166,93 @@ This remains the same because `MODE_H_ACTIVE_PIXELS` refers to the number of pix
 5. Verify and adjust any command lists or related configurations.
 
 These changes will ensure the system correctly handles the **RGB565** format for the framebuffer and outputs the appropriate video signal.
+
+# 16 bit colors, anders dan hierboven
+
+To adjust the TMDS encoder for **16-bit colors (RGB565)**, you need to modify the configuration of the TMDS encoder to handle the increased bit depth per pixel. The current configuration is set up for **8-bit colors (RGB332)**, so adjustments are required to account for the **16 bits per pixel** in RGB565.
+
+---
+
+### Steps to Adjust the TMDS Encoder for 16-bit Colors:
+
+#### 1. **Update the TMDS Encoder Configuration**
+The TMDS encoder is configured using the `hstx_ctrl_hw->expand_tmds` register. This register defines how the TMDS lanes expand the pixel data. For RGB565, you need to update the number of bits per color channel (5 bits for red, 6 bits for green, and 5 bits for blue).
+
+Modify the `expand_tmds` configuration as follows:
+```c
+hstx_ctrl_hw->expand_tmds =
+    5  << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |  // 5 bits for red
+    0  << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB   |  // No rotation for red
+    6  << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |  // 6 bits for green
+    29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB   |  // Rotation for green
+    5  << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |  // 5 bits for blue
+    26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;     // Rotation for blue
+```
+
+#### Explanation:
+- **`*_NBITS_LSB`**: Specifies the number of bits for each color channel.
+  - Red: 5 bits
+  - Green: 6 bits
+  - Blue: 5 bits
+- **`*_ROT_LSB`**: Specifies the rotation for each color channel. This is used to align the bits correctly for the TMDS lanes. The values (e.g., `29`, `26`) depend on the hardware's TMDS encoder implementation.
+
+---
+
+#### 2. **Update the Framebuffer Format**
+Ensure the framebuffer (`framebuf`) is updated to store **16-bit RGB565** data. Each pixel should now be represented as a 16-bit value. If you are generating the framebuffer data, use the `colour_rgb565` function to encode RGB values into the RGB565 format:
+```c
+static __force_inline uint16_t colour_rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((uint16_t)r & 0xf8) >> 3 |  // Top 5 bits of red
+           ((uint16_t)g & 0xfc) << 3 |  // Top 6 bits of green
+           ((uint16_t)b & 0xf8) << 8;   // Top 5 bits of blue
+}
+```
+
+---
+
+#### 3. **Adjust DMA Transfer Count**
+The DMA transfer count must be updated to reflect the new pixel size (16 bits = 2 bytes per pixel). Update the `transfer_count` in the `dma_irq_handler`:
+```c
+ch->transfer_count = (MODE_H_ACTIVE_PIXELS * 2) / sizeof(uint32_t);
+```
+
+Explanation:
+- `MODE_H_ACTIVE_PIXELS * 2`: Total bytes in a scanline (2 bytes per pixel).
+- `sizeof(uint32_t)`: The DMA transfer count is in terms of 32-bit words (4 bytes).
+
+---
+
+#### 4. **Update Command Lists**
+If the command lists (e.g., `vactive_line`) depend on the pixel format, ensure they are updated to handle the new data size. For example, in `vactive_line`:
+```c
+static uint32_t vactive_line[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,
+    SYNC_V1_H1,
+    HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,
+    SYNC_V1_H0,
+    HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_BACK_PORCH,
+    SYNC_V1_H1,
+    HSTX_CMD_TMDS       | MODE_H_ACTIVE_PIXELS  // No change needed here
+};
+```
+The `MODE_H_ACTIVE_PIXELS` value remains the same because it refers to the number of pixels, not bytes.
+
+---
+
+#### 5. **Verify TMDS Clock and Bandwidth**
+Switching to 16-bit colors doubles the data bandwidth compared to 8-bit colors. Ensure that:
+- The TMDS clock is fast enough to handle the increased data rate.
+- The HSTX FIFO and DMA can sustain the higher data throughput.
+
+---
+
+### Summary of Changes:
+1. Update `hstx_ctrl_hw->expand_tmds` to handle 16-bit RGB565 (5 bits red, 6 bits green, 5 bits blue).
+2. Ensure the framebuffer stores 16-bit RGB565 data.
+3. Adjust the DMA `transfer_count` to account for 2 bytes per pixel.
+4. Verify and update command lists if necessary.
+5. Ensure the TMDS clock and hardware can handle the increased bandwidth.
+
+These changes will configure the TMDS encoder to correctly process and output 16-bit RGB565 color data.
