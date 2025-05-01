@@ -50,6 +50,7 @@ target_link_libraries(dvi_out_hstx_encoder
         pico_multicore
         hardware_dma
         pico_sync
+        hardware_clocks
         )
 
 # create map/bin/hex/uf2 file etc.
