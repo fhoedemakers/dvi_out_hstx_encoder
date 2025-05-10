@@ -23,7 +23,7 @@
 #include "hardware/vreg.h"
 
 // Comment line below to display 640x240 RGB565
-// #define RBG332    // display 640x480 RGB332
+#define RBG332    // display 640x480 RGB332
 // ----------------------------------------------------------------------------
 #ifdef RBG332
 #include "mario_640x480_rgb332.h"
@@ -124,6 +124,10 @@ static uint v_scanline = 2;
 // post the command list, and another to post the pixels.
 static bool vactive_cmdlist_posted = false;
 
+#ifndef _IMG_ASSET_SECTION
+#define _IMG_ASSET_SECTION ".data"
+#endif
+char __attribute__((aligned(4), section(_IMG_ASSET_SECTION ".tempbuf"))) tempbuf[640]; 
 void __scratch_x("") dma_irq_handler()
 {
     // dma_pong indicates the channel that just finished, which is the one
@@ -154,7 +158,13 @@ void __scratch_x("") dma_irq_handler()
     else
     {
 #ifdef RBG332
-        ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        ch->read_addr = (uintptr_t)&tempbuf;
+        char *ptr = (char *)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
+        for(int i=0; i<640; i++) {
+            tempbuf[i] = *ptr++;
+        }
+        
+        //ch->read_addr = (uintptr_t)&framebuf[(v_scanline - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) * MODE_H_ACTIVE_PIXELS];
         // // Duplicate the upper half of the image to the lower half
         // if (v_scanline > 523 - 480 + 240)
         // {
@@ -270,7 +280,34 @@ void core1_main()
     {
         // For each TMDS lane, assign it to the correct GPIO pair based on the
         // desired pinout:
-        static const int lane_to_output_bit[3] = {6, 4, 0}; // {0, 6, 4};
+        // HSTX Output Bits and GPIO Pins
+        // The HSTX hardware outputs data on 8 "output bits" (0 through 7), which are mapped to specific GPIO pins. The mapping is fixed as follows:
+
+        // HSTX Output Bit 0 → GPIO12
+        // HSTX Output Bit 1 → GPIO13
+        // HSTX Output Bit 2 → GPIO14
+        // HSTX Output Bit 3 → GPIO15
+        // HSTX Output Bit 4 → GPIO16
+        // HSTX Output Bit 5 → GPIO17
+        // HSTX Output Bit 6 → GPIO18
+        // HSTX Output Bit 7 → GPIO19
+        // lane_to_output_bit Array
+        // The lane_to_output_bit array specifies which HSTX output bits are used for each TMDS lane:
+
+        // Index 0: TMDS lane D0 (data lane 0)
+        // Index 1: TMDS lane D1 (data lane 1)
+        // Index 2: TMDS lane D2 (data lane 2)
+
+        // Hardcoded mapping for now using Adafruit Metro RP2350
+        // The mapping is fixed as follows:
+        // D0+ = CPIO18, D0-=GPIO19, D1+=GPIO16, D1-=GPIO17, D2+-GPIO12, D2-=GPIO13 
+        // For the array {6, 4, 0}:
+        
+        // D0 (Index 0) is assigned to HSTX output bit 6 → GPIO18 (D0+) and GPIO19 (D0-).
+        // D1 (Index 1) is assigned to HSTX output bit 4 → GPIO16 (D1+) and GPIO17 (D1-).
+        // D2 (Index 2) is assigned to HSTX output bit 0 → GPIO12 (D2+) and GPIO13 (D2-).
+        // https://learn.adafruit.com/adafruit-metro-rp2350/pinouts#hstx-connector-3193107
+        static const int lane_to_output_bit[3] = {6, 4, 0}; // was {0, 6, 4};
         int bit = lane_to_output_bit[lane];
         // Output even bits during first half of each HSTX cycle, and odd bits
         // during second half. The shifter advances by two bits each cycle.
